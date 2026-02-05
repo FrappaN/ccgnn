@@ -2,7 +2,7 @@
 
 This repository contains the official implementation for the KDD 2026 submission: "Inductive Correlation Clustering with Graph Neural Networks".
 
-The core experiments for Correlation Clustering presented in the paper can be replicated using the following scripts:
+The core experiments for Correlation Clustering presented in the paper can be replicated using the following scripts in the `src/` folder:
 
 - `main.py`: Executes experiments in the transductive setting.
 - `main_inductive.py`: Executes experiments in the inductive setting (requires datasets with node features).
