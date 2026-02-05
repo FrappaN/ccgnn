@@ -80,7 +80,6 @@ else:
 costs_data = []
 objective = 'MatrixFactorization'
 
-
 for dataset in  datasets:
 
     if dataset in cc_bench_datasets:

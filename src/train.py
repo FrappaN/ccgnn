@@ -2,13 +2,11 @@ import torch
 from torch_geometric.data import Data
 import numpy as np
 from torch_geometric.utils import k_hop_subgraph, to_networkx
-from torch_geometric.utils import dropout_edge, to_scipy_sparse_matrix
+from torch_geometric.utils import to_scipy_sparse_matrix
 from tqdm import tqdm
-from utils import round_charikar
-import networkx as nx
+
 import scipy.sparse as sp
-import itertools
-from utils import compute_cost_from_clustering_complete_graph, compute_cost_from_clustering
+
 
 
 def train_linkmodel(model, data, device, epochs=100, lr=0.01, weight_decay=0.0, patience=10, random_pivots=1000):
@@ -120,7 +118,7 @@ def train_linkmodel(model, data, device, epochs=100, lr=0.01, weight_decay=0.0, 
     return model
 
 
-def train_nodemodel(model, data, loss_fn, lr, wd=5e-4, num_epochs=100, patience=100, random_pivots=None, device='cpu', dropout=False):
+def train_nodemodel(model, data, loss_fn, lr, wd=5e-4, num_epochs=100, patience=100, random_pivots=None, device='cpu'):
     model.train()
 
     loss_list = []

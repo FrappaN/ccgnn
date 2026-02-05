@@ -130,7 +130,6 @@ for pooling in pooling_methods:
                 dataset = dataset[keep_idx]
                 dataset.data.y = dataset.data.y.view(-1)
 
-                
             else:
                 raise ValueError(f"Unsupported dataset: {args.dataset}")
 
@@ -150,7 +149,9 @@ for pooling in pooling_methods:
 
         num_classes = getattr(dataset, 'num_classes', None)
         if num_classes is None:
-            num_classes = torch.max(dataset[0].y).item() + 1
+            labels = [data.y for data in dataset]
+            labels = torch.cat(labels, dim=0)
+            num_classes = torch.max(labels).item() + 1
 
         loss_fn = F.nll_loss
 

@@ -9,7 +9,6 @@ import torch_geometric as tg
 import pandas as pd
 import numpy as np
 import time
-import subprocess
 import argparse
 from sklearn.metrics import normalized_mutual_info_score
 
@@ -98,7 +97,6 @@ else:
 
 costs_data = []
 objective = 'MatrixFactorization'
-
 
 for dataset in feature_datasets:
 

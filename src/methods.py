@@ -1,4 +1,3 @@
-from pyccalg import solve_instance
 from mod_pivot import CorrelationClustering
 from models import MLPModel, GNNModel, EMBMLPModel, EMBOnlyModel, LinearModel
 import torch
@@ -6,11 +5,10 @@ import torch_geometric as tg
 import numpy as np
 import scipy.sparse as sp
 import time
-import scipy.optimize as opt
 
 from torch_geometric.loader import NeighborLoader
 from torch_geometric.data import Data
-from torch_geometric.utils import dropout_edge, k_hop_subgraph
+from torch_geometric.utils import k_hop_subgraph
 from train import train_nodemodel
 from utils import compute_cost_from_clustering_complete_graph
 
