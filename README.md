@@ -18,7 +18,7 @@ To replicate specific subsets of the experiments, use the --methods and --datase
 
 ```
 python main.py --methods GNN LinkGNN modified_pivot --datasets polblogs ca-GrQc Cora
-python main_inductive.py --methods GNN LinkGNN modified_pivot --datasets Cora WikiCS AmazonPhoto
+python main_inductive.py --methods GNN LinkGNN modified_pivot --datasets MUTAG REDDIT-BINARY
 ```
 
 ## Pooling Benchmark
