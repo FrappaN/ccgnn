@@ -1,11 +1,14 @@
 # Inductive Correlation Clustering with Graph Neural Networks
 
-This repository contains the official implementation for the KDD 2026 submission: "Inductive Correlation Clustering with Graph Neural Networks".
+This repository contains the official implementation for the paper: "Inductive Correlation Clustering with Graph Neural Networks".
 
 The core experiments for Correlation Clustering presented in the paper can be replicated using the following scripts in the `src/` folder:
 
 - `main.py`: Executes experiments in the transductive setting.
-- `main_inductive.py`: Executes experiments in the inductive setting (requires datasets with node features).
+- `main_inductive.py`: Executes experiments in the inductive setting.
+- `test_hyperparams.py`: Executes ablation experiments in the transductive setting.
+- `ablation_ind.py`: Executes ablation experiment in the inductive setting.
+- `threshold_sweep.py`: Executes the sensitivity analysis experiment in the inductive setting.
 
 Running either script without arguments will execute all methods across all datasets using default hyperparameters. 
 The `pooling_bench/` folder, instead, contains all code necessary for the replication of the pooling experiments.

@@ -4,12 +4,13 @@ import torch
 import torch.nn.functional as F
 from torch_geometric.nn import GINConv, MLP, DenseGINConv, PANConv
 from torch_geometric.nn.resolver import activation_resolver
+from torch_geometric.nn import global_add_pool
 
 from scripts.pooling.cc_pool import CCPooler
 
 # TGP integration
 from tgp.poolers import get_pooler, pooler_map
-from tgp.utils import connectivity_to_sparse_tensor
+
 
 
 
@@ -35,9 +36,12 @@ class GIN_Pool_Net(torch.nn.Module):
                  k_order=None,
                  linear_cc=False,
                  num_layers_pre=2,
-                 num_pivots=None,):
+                 num_pivots=None,
+                 k_sep=2,
+                 ):
         super().__init__()
         self.pooling = pooling
+        self.k_sep = k_sep
 
         self.conv_layers_pre = torch.nn.ModuleList()
         self.act = activation_resolver(activation)
@@ -130,6 +134,9 @@ class GIN_Pool_Net(torch.nn.Module):
         else:
             x, adj, mask = self.pooler.preprocessing(x=x, edge_index=adj, edge_weight=edge_weight, batch=batch)
             out = self.pooler(x=x, adj=adj, edge_weight=edge_weight, batch=batch, mask=mask)
+            if self.pooling == 'sep':
+                for _ in range(self.k_sep-1):
+                    out = self.pooler(x=out.x, adj=out.edge_index, edge_weight=out.edge_weight, batch=out.batch, mask=out.mask)
 
         x_pool, adj_pool = out.x, out.edge_index
         if verbose:
@@ -140,7 +147,11 @@ class GIN_Pool_Net(torch.nn.Module):
         x = self.act(x)
 
         # Global pooling
-        x = self.pooler.global_pool(x, reduce_op="sum", batch=out.batch)
+        #if self.pooling == 'sep':
+            # perform global pooling using torch_geometric.nn.global_add_pool
+        x = global_add_pool(x, out.batch)
+        #else:
+           # x = self.pooler.global_pool(x, reduce_op="sum", batch=out.batch)
 
         # Readout
         x = self.mlp(x)

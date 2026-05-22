@@ -6,13 +6,14 @@ os.environ['OPENBLAS_NUM_THREADS'] = '2'  # Limit the number of threads for Open
 
 import torch
 import pandas as pd
+import numpy as np
 import time
 
 from torch_geometric import seed_everything
 
 
 from methods import init_loss
-from train import train_nodemodel
+from train import train_linkmodel, make_cc_clusters, compute_out, train_nodemodel
 from utils import compute_cost_from_clustering_complete_graph
 from models import GNNModel
 from load_utils import load_suitesparse_dataset

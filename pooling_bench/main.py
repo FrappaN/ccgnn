@@ -84,7 +84,7 @@ def test(model, loader, loss_fn):
             pass
     return total_correct / len(loader.dataset), total_loss / len(loader.dataset)
 
-pooling_methods =  [ 'ccpool', 'nopool', 'jb', 'hosc', 'dmon', 'acc', 'kmis', 'maxcut',]
+pooling_methods =  [ 'ccpool', 'nopool', 'jb', 'hosc', 'dmon', 'acc', 'kmis', 'maxcut', 'sep']
 all_results = []
 for pooling in pooling_methods:
     try:
