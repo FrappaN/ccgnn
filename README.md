@@ -28,3 +28,15 @@ The `pooling_bench` directory contains code adapted from [The expressive power o
 ```
 python main.py --dataset MUTAG
 ```
+
+## Citation
+
+If you find this work or code useful in your research, please cite our paper:
+
+```bibtex
+@inproceedings{nerini2026inductive,
+  title={Inductive Correlation Clustering with Graph Neural Networks},
+  author={Nerini, Francesco Paolo and Bonchi, Francesco and Khan, Arijit and Panisson, Andr{\'e}},
+  booktitle={Proceedings of the 35th ACM International Conference on Information and Knowledge Management},
+  year={2026}
+}
