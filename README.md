@@ -1,6 +1,6 @@
 # Inductive Correlation Clustering with Graph Neural Networks
 
-This repository contains the official implementation for the paper: "Inductive Correlation Clustering with Graph Neural Networks".
+This repository contains the official implementation for the paper: "Inductive Correlation Clustering with Graph Neural Networks", by Francesco Paolo Nerini, Francesco Bonchi, Arijit Khan, and André Panisson, accepted at CIKM'26 (Rome).
 
 The core experiments for Correlation Clustering presented in the paper can be replicated using the following scripts in the `src/` folder:
 
