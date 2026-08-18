@@ -1,8 +1,11 @@
 
-import torch
-import numpy as np
-from sklearn.metrics.cluster import pair_confusion_matrix, normalized_mutual_info_score
 import random
+import subprocess  # FIX: used by get_gpu_memory_usage(), was never imported
+import time        # FIX: used by wait_for_cuda_memory(), was never imported
+
+import numpy as np
+import torch
+from sklearn.metrics.cluster import pair_confusion_matrix, normalized_mutual_info_score
 
 def convert_matrix_to_clusters(cluster_assignment_matrix):
 	# convert the clusters assignment matrix to a set of sets
@@ -121,6 +124,13 @@ def wait_for_cuda_memory(required_memory_gib, device, interval_minutes=10):
 
 
 def compute_cost_from_clustering_complete_graph(clustering, edge_index):
+	"""
+	Number of disagreements of `clustering` under the complete signed-graph
+	formulation of Eq. 2: cut edges + non-adjacent pairs placed together.
+	Assumes edge_index stores both directions and has no self-loops.
+	"""
+	clustering = clustering.cpu()
+	edge_index = edge_index.cpu()
 	directed_edge_index = edge_index[:, edge_index[0] < edge_index[1]]
 	clusters, counts = torch.unique(clustering, return_counts=True)
 	diff_edge_mask = (clustering[directed_edge_index[0]] != clustering[directed_edge_index[1]]).float()

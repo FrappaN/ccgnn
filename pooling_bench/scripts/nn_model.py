@@ -12,9 +12,6 @@ from scripts.pooling.cc_pool import CCPooler
 from tgp.poolers import get_pooler, pooler_map
 
 
-
-
-
 class GIN_Pool_Net(torch.nn.Module):
     """Model that uses poolers from the tgp library (plus custom CCPooler) as in graph_classification.py.
 
@@ -157,16 +154,52 @@ class GIN_Pool_Net(torch.nn.Module):
         x = self.mlp(x)
 
         aux_loss = torch.tensor(0.0, device=x_pool.device)
+        aux_val = None
         if getattr(out, "loss", None) is not None:
-            # Sum all losses if present
+            # Two separate faults lived here.
+            #
+            # (1) CCPooler builds PoolingOutput(..., loss=<bare tensor>), but
+            #     tgp's get_loss_value() expects a dict of named losses and
+            #     returns None for a bare tensor.  torch.tensor(None) then
+            #     raised TypeError, the bare `except Exception: pass` swallowed
+            #     it, and aux_loss stayed at exactly 0.0.  The CC objective was
+            #     never retrieved at all -- which is why the selector's GCN
+            #     never received a gradient and stayed at its random init.
+            #     Fall back to out.loss when get_loss_value() gives nothing.
+            #
+            # (2) Even when a value did come back, `torch.tensor(aux_val, ...)`
+            #     copies the data and DROPS THE AUTOGRAD HISTORY.  Only the
+            #     `isinstance(aux_val, list)` branch preserved the gradient.
+            #
+            # The bare except also hid both; it now warns.
             try:
                 aux_val = out.get_loss_value()
-                if isinstance(aux_val, list):
-                    aux_loss = sum(aux_val)
-                else:
-                    aux_loss = torch.tensor(aux_val, device=x_pool.device, dtype=torch.float32)
-            except Exception:
-                pass
+            except Exception as e:
+                import warnings
+                warnings.warn(f'get_loss_value() failed ({type(e).__name__}: {e}); '
+                              'falling back to out.loss')
+                aux_val = None
+
+            if aux_val is None:
+                aux_val = getattr(out, "loss", None)
+
+            if isinstance(aux_val, (list, tuple)):
+                aux_loss = sum(aux_val)
+            elif isinstance(aux_val, dict):
+                aux_loss = sum(aux_val.values())
+            elif torch.is_tensor(aux_val):
+                aux_loss = aux_val.to(x_pool.device)
+            elif aux_val is not None:
+                aux_loss = torch.as_tensor(aux_val, device=x_pool.device,
+                                           dtype=torch.float32)
+
+            if torch.is_tensor(aux_loss) and not aux_loss.requires_grad \
+                    and torch.is_grad_enabled() and self.training:
+                import warnings
+                warnings.warn(
+                    f'[{self.pooling}] auxiliary loss is detached from the graph; '
+                    'it cannot train the pooler.')
+
 
         return F.log_softmax(x, dim=-1), aux_loss
     

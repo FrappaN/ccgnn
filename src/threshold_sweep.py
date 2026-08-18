@@ -18,7 +18,9 @@ from ogb.graphproppred import PygGraphPropPredDataset
 from torch_geometric.nn import Node2Vec
 from tqdm import tqdm
 
-from load_utils import EXPWL1Dataset
+# FIX: EXPWL1Dataset lives in tgp.datasets, not load_utils; the original
+# import raised ImportError before the script could start.
+from tgp.datasets import EXPWL1Dataset
 from models import GNNModel
 from utils import compute_cost_from_clustering_complete_graph
 from train import train_linkmodel_batch, make_cc_clusters
@@ -95,7 +97,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 datasets       = ['REDDIT-BINARY']
 hidden_dims    = [16, 64, 256]          # sweep over hidden_channels
-thresholds     = np.arange(0.0, 1.05, 0.05)      # same grid used in main_inductive3
+thresholds     = np.arange(0.0, 1.05, 0.05)      # same grid used in main_inductive
 
 n_iters        = 5
 patience       = 10

@@ -1,4 +1,5 @@
 import argparse
+import os
 from argparse import RawTextHelpFormatter
 import numpy as np
 import torch
@@ -36,9 +37,17 @@ parser.add_argument('--max_epochs', type=int, default=1000)
 parser.add_argument('--runs', type=int, default=10)
 parser.add_argument('--patience', type=int, default=100)
 parser.add_argument('--results_path', type=str, default='./results/')
+parser.add_argument('--poolers', type=str, nargs='+', default=None,
+                    help='Subset of pooling methods to run (default: all).')
+parser.add_argument('--data_root', type=str, default='data',
+                    help='Where dataset caches are written (TUDataset, OGB, EXPWL1). '
+                         'Point at a writable directory when the repo lives on a '
+                         'read-only mount, e.g. --data_root /kaggle/working/data')
 parser.add_argument('--verbose', action='store_true', default=False, help='Print stuff for debugging')
 parser.add_argument('--dataset', type=str, default='EXPWL1', choices=['EXPWL1', 'MUTAG', 'NCI1', 'REDDIT-BINARY', 'ogbg-molhiv', 'multipartite'], help='Dataset to use')
 args = parser.parse_args()
+os.makedirs(args.results_path, exist_ok=True)
+os.makedirs(args.data_root, exist_ok=True)
 print(args)
 
 timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -84,17 +93,21 @@ def test(model, loader, loss_fn):
             pass
     return total_correct / len(loader.dataset), total_loss / len(loader.dataset)
 
-pooling_methods =  [ 'ccpool', 'nopool', 'jb', 'hosc', 'dmon', 'acc', 'kmis', 'maxcut', 'sep']
+ALL_POOLERS = ['ccpool', 'nopool', 'jb', 'hosc', 'dmon', 'acc', 'kmis', 'maxcut', 'sep']
+pooling_methods = ALL_POOLERS if args.poolers is None else args.poolers
+_unknown = [p for p in pooling_methods if p not in ALL_POOLERS]
+if _unknown:
+    raise ValueError(f'Unknown pooler(s): {_unknown}. Available: {ALL_POOLERS}')
 all_results = []
 for pooling in pooling_methods:
     try:
         ### Dataset
         if args.dataset == 'EXPWL1':
-            path = "data/EXPWL1/"
+            path = os.path.join(args.data_root, "EXPWL1")
             dataset = EXPWL1Dataset(path, transform=DataToFloat())
             pre_transform = None
         elif args.dataset == 'multipartite':
-            path = "data/multipartite"
+            path = os.path.join(args.data_root, "multipartite")
             dataset = MultipartiteGraphDataset(path)
             pre_transform = None
         else:
@@ -115,11 +128,11 @@ for pooling in pooling_methods:
                     pre_transform = Compose([pre_transform, transform])
 
             if args.dataset in ['MUTAG', 'NCI1', 'REDDIT-BINARY']:
-                dataset = TUDataset(root='data/TUDataset', name=args.dataset, pre_transform=pre_transform, use_node_attr=True, force_reload=False)
+                dataset = TUDataset(root=os.path.join(args.data_root, f'TUDataset_{pooling}'), name=args.dataset, pre_transform=pre_transform, use_node_attr=True, force_reload=False)
             elif args.dataset == 'ogbg-molhiv':
                 if PygGraphPropPredDataset is None:
                     raise RuntimeError("ogb is not installed. Please install ogb to use ogbg-molhiv.")
-                dataset = PygGraphPropPredDataset(name='ogbg-molhiv', root='data/OGB', pre_transform=pre_transform)
+                dataset = PygGraphPropPredDataset(name='ogbg-molhiv', root=os.path.join(args.data_root, 'OGB'), pre_transform=pre_transform)
                 # Filter out missing labels (-1)
                 keep_idx = []
                 for i, d in enumerate(dataset):

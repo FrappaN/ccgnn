@@ -46,7 +46,7 @@ parser.add_argument('--batch_size', type=int, default=5000, help='Batch size for
 parser.add_argument('--datasets', type=str, nargs='+', default=None, 
                     help='List of datasets to run. Options: polblogs, ca-GrQc, ca-HepTh, ca-AstroPh, email-Enron, cond-mat-2005, Cora, PubMed, CiteSeer, AmazonPhoto, AmazonComputers, WikiCS, FacebookPagePage, GitHub, OGBN-Arxiv. If None, all datasets will be run (default: None)')
 parser.add_argument('--methods', type=str, nargs='+', default=None,
-                    help='List of methods to use. Options: GNN, LinkGNN, kwikcluster, modified_pivot, EMBOnly, LinkEMBOnly, Linear, LinearLink. If None, all methods will be used (default: None)')
+                    help='List of methods to use. Options: GNN, LinkGNN, kwikcluster, modified_pivot, EMBOnly, LinkEmbOnly, Linear, LinearLink. If None, all methods will be used (default: None)')
 
 args = parser.parse_args()
 
@@ -71,11 +71,22 @@ else:
     datasets = all_datasets
 
 # Define available methods
-all_methods = ['GNN', 'LinkGNN', 'kwikcluster', 'modified_pivot', 'EMBOnly',' LinkEMBOnly', 'Linear', 'LinearLink']
+# FIX: this list used to read "' LinkEMBOnly'" -- a leading space plus a
+# capitalisation that matches nothing in the dispatch below (which tests for
+# 'LinkEmbOnly').  With the default method list the entry fell through every
+# branch of the link-method dispatch, leaving `model` bound to the *previous*
+# iteration's model, so the run silently recorded duplicated results under a
+# bogus method name instead of raising.
+all_methods = ['GNN', 'LinkGNN', 'kwikcluster', 'modified_pivot', 'EMBOnly', 'LinkEmbOnly', 'Linear', 'LinearLink']
+link_methods = ['LinkGNN', 'LinearLink', 'LinkEmbOnly']
 if args.methods is not None:
     methods = args.methods
 else:
     methods = all_methods
+
+unknown = [m for m in methods if m not in all_methods]
+if unknown:
+    raise ValueError(f"Unknown method(s): {unknown}. Available: {all_methods}")
 
 costs_data = []
 objective = 'MatrixFactorization'
@@ -213,6 +224,9 @@ for dataset in  datasets:
                         hidden_channels=hidden_channels,
                         num_nodes=data.num_nodes,
                         ).to(device)
+                else:
+                    # FIX: fail loudly instead of silently reusing a stale `model`
+                    raise ValueError(f"Method {method} reached the link-method branch but has no model constructor.")
                 model = train_linkmodel(model, data, device, epochs=args.num_epochs, lr=args.lr, weight_decay=args.weight_decay, patience=args.patience, random_pivots=args.random_pivots)
                 time_end = time.time()
                 train_runtime = time_end - time_start
@@ -228,7 +242,6 @@ for dataset in  datasets:
                 for threshold in np.arange(0.05, 1., 0.05,):
                     time_start = time.time()
                     pivot_clustering = make_cc_clusters(out, data.edge_index, threshold, device)
-                    # pivot_clustering = make_pivot_clusters(out, device, threshold=threshold)
                     time_end = time.time()
                     runtime += time_end - time_start
 
@@ -237,6 +250,7 @@ for dataset in  datasets:
                         best_threshold = threshold
                         cost = pivot_cost
                         best_pivot_clustering = pivot_clustering
+
 
                 if (best_pivot_clustering == -1).any():
                     raise ValueError('Some nodes were not assigned to any cluster.')

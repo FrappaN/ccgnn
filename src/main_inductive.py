@@ -20,7 +20,9 @@ from ogb.graphproppred import PygGraphPropPredDataset
 
 from methods import method_switchcase, init_loss
 
-from load_utils import EXPWL1Dataset
+# FIX: EXPWL1Dataset lives in tgp.datasets, not load_utils.
+# The original import raised ImportError before the script could start.
+from tgp.datasets import EXPWL1Dataset
 from torch_geometric.datasets import TUDataset
 from models import GNNModel, LinearModel
 from utils import compute_cost_from_clustering_complete_graph
@@ -118,13 +120,35 @@ parser.add_argument('--n2v_epochs', type=int, default=100,
                     help='Node2Vec training epochs per graph (default: 100)')
 parser.add_argument('--allones', action='store_true', default=False,
                     help='Replace node features with ones')
+parser.add_argument('--node2vec', action='store_true', default=True,
+                    help='Use Node2Vec structural embeddings as node features (default). '
+                         'FIX: this flag was read in four places but never registered, '
+                         'so every run raised AttributeError.')
+parser.add_argument('--no_node2vec', dest='node2vec', action='store_false',
+                    help='Disable Node2Vec features.')
+parser.add_argument('--only_reddit_linearlink', action='store_true', default=False,
+                    help='Restore the old behaviour of running LinearLink only on '
+                         'REDDIT-BINARY (it was previously skipped everywhere else).')
 
 args = parser.parse_args()
 
-if args.datasets is None:
-    datasets = ['MUTAG', 'REDDIT-BINARY', 'NCI1', 'EXPWL1',  'github_stargazers', 'ogbg-ppa', 'ogbg-molhiv']
-if args.methods is None:
-    methods = ['GNN', 'LinkGNN', 'kwikcluster', 'modified_pivot', 'EMBOnly', 'LinkEMBOnly', 'Linear', 'LinearLink']
+# FIX: `datasets` / `methods` were only bound in the `is None` branch, so passing
+# --datasets or --methods explicitly raised NameError further down. Also, the
+# default method list advertised 'LinkEMBOnly', which no dispatch branch matches
+# (the branches test for 'LinkGNN', 'LinearLink', 'GNN', 'Linear'), so it was
+# silently skipped rather than reported as unknown.
+all_datasets = ['MUTAG', 'REDDIT-BINARY', 'NCI1', 'EXPWL1', 'github_stargazers', 'ogbg-ppa', 'ogbg-molhiv']
+all_methods = ['GNN', 'LinkGNN', 'kwikcluster', 'modified_pivot', 'EMBOnly', 'Linear', 'LinearLink']
+
+datasets = all_datasets if args.datasets is None else args.datasets
+methods = all_methods if args.methods is None else args.methods
+
+unknown_ds = [d for d in datasets if d not in all_datasets]
+unknown_m = [m for m in methods if m not in all_methods]
+if unknown_ds:
+    raise ValueError(f"Unknown dataset(s): {unknown_ds}. Available: {all_datasets}")
+if unknown_m:
+    raise ValueError(f"Unknown method(s): {unknown_m}. Available: {all_methods}")
 n_iters = args.n_iter
 patience = args.patience
 num_epochs = args.num_epochs
@@ -189,7 +213,11 @@ for dataset_name in datasets:
     else:
         feature_type = 'node2vec'
     
-    methods = ['GNN', 'LinkGNN', 'modified_pivot', 'kwikcluster']  #  'GNN','scipy_opt',  'GNN', 'LinkGNN', 'kwikcluster', 'modified_pivot'  'kwikcluster', 'modified_pivot',
+    # FIX: this line used to read
+    #     methods = ['GNN', 'LinkGNN', 'modified_pivot', 'kwikcluster']
+    # which silently overwrote whatever was passed via --methods, so
+    # `--methods LinearLink` (and any other selection) was ignored and the
+    # hard-coded list ran instead.  `methods` is now taken from the CLI.
     objective = 'MatrixFactorization'
 
     max_clusters = max([data.num_nodes for data in dataset])
@@ -201,7 +229,12 @@ for dataset_name in datasets:
     print('Loaded dataset:', dataset_name, 'max_clusters:', max_clusters,
           f'feature_type={feature_type}')
     for method in methods:
-        if method == 'LinearLink' and dataset_name != 'REDDIT-BINARY':
+        # FIX: LinearLink used to be skipped on every dataset except
+        # REDDIT-BINARY.  Combined with the hard-coded `methods` list above it
+        # could never run at all.  Pass --only_reddit_linearlink to restore the
+        # old restriction.
+        if (method == 'LinearLink' and args.only_reddit_linearlink
+                and dataset_name != 'REDDIT-BINARY'):
             continue
 
         for i in range(n_iters):
@@ -217,28 +250,40 @@ for dataset_name in datasets:
 
                 
             # ---- Optionally replace features with Node2Vec embeddings ----
+            # Timed separately: Node2Vec is a preprocessing cost paid once per
+            # split, not part of inference, but it is a real part of the
+            # end-to-end cost of the inductive pipeline and worth reporting.
+            n2v_time = 0.0
+            n2v_time_train = n2v_time_val = n2v_time_test = 0.0
+            _n2v_t0 = time.time()
             if args.node2vec:
                 print(f'[Node2Vec] Computing {args.n2v_dim}-dim embeddings for train_dataset with {len(train_dataset)} graphs, {args.n2v_epochs} epochs each ...')
+                _t = time.time()
                 train_dataset = compute_node2vec_features_batch(
                     train_dataset,
                     n2v_dim=args.n2v_dim,
                     n2v_epochs=args.n2v_epochs,
                     loader_batch_size=batch_size,
                 )
+                n2v_time_train = time.time() - _t
                 print(f'[Node2Vec] Computing {args.n2v_dim}-dim embeddings for val_dataset with {len(val_dataset)} graphs, {args.n2v_epochs} epochs each ...')
+                _t = time.time()
                 val_dataset = compute_node2vec_features_batch(
                     val_dataset,
                     n2v_dim=args.n2v_dim,
                     n2v_epochs=args.n2v_epochs,
                     loader_batch_size=batch_size,
                 )
+                n2v_time_val = time.time() - _t
                 print(f'[Node2Vec] Computing {args.n2v_dim}-dim embeddings for test_dataset with {len(test_dataset)} graphs, {args.n2v_epochs} epochs each ...')
+                _t = time.time()
                 test_dataset = compute_node2vec_features_batch(
                     test_dataset,
                     n2v_dim=args.n2v_dim,
                     n2v_epochs=args.n2v_epochs,
                     loader_batch_size=batch_size,
                 )
+                n2v_time_test = time.time() - _t
             elif args.allones:
                 # perform a transform that replaces all node features with ones
                 train_dataset = [add_ones(data) for data in train_dataset]
@@ -271,15 +316,15 @@ for dataset_name in datasets:
                 train_time_start = time.time()
                 model = train_nodemodel_batch(
                                             model,
-                                            train_loader, 
-                                            val_loader, 
-                                            loss_fn=loss_fn, 
-                                            device=device, 
-                                            epochs=num_epochs, 
-                                            lr=lr, 
-                                            wd=weight_decay, 
-                                            patience=patience, 
-                                            batch_size=batch_size
+                                            train_loader,
+                                            val_loader,
+                                            loss_fn=loss_fn,
+                                            device=device,
+                                            epochs=num_epochs,
+                                            lr=lr,
+                                            wd=weight_decay,
+                                            patience=patience,
+                                            batch_size=batch_size,
                                         )
                 train_time = time.time() - train_time_start
                 gpu_peak_memory_mb = (
@@ -310,6 +355,10 @@ for dataset_name in datasets:
                     graphs_in_test+= data.num_graphs
 
                 curr_results = {
+                    'n2v_time_total': n2v_time_train + n2v_time_val + n2v_time_test,
+                    'n2v_time_train': n2v_time_train,
+                    'n2v_time_val': n2v_time_val,
+                    'n2v_time_test': n2v_time_test,
                     'avg_nodes': tot_nodes/graphs_in_test, 
                     'avg_edges': tot_edges/graphs_in_test,
                     'name': dataset_name,
@@ -349,7 +398,7 @@ for dataset_name in datasets:
                                             lr=lr, 
                                             wd=weight_decay, 
                                             patience=patience, 
-                                            batch_size=batch_size
+                                            batch_size=batch_size,
                                         )
                 train_time = time.time() - train_time_start
                 gpu_peak_memory_mb = (
@@ -397,6 +446,10 @@ for dataset_name in datasets:
                     tot_edges += data.num_edges
 
                 curr_results = {
+                    'n2v_time_total': n2v_time_train + n2v_time_val + n2v_time_test,
+                    'n2v_time_train': n2v_time_train,
+                    'n2v_time_val': n2v_time_val,
+                    'n2v_time_test': n2v_time_test,
                     'avg_nodes': tot_nodes/graphs_in_test, 
                     'avg_edges': tot_edges/graphs_in_test,
                     'name': dataset_name,
@@ -440,6 +493,10 @@ for dataset_name in datasets:
                     found_clusters += len(torch.unique(clustering))
 
                 curr_results = {
+                    'n2v_time_total': n2v_time_train + n2v_time_val + n2v_time_test,
+                    'n2v_time_train': n2v_time_train,
+                    'n2v_time_val': n2v_time_val,
+                    'n2v_time_test': n2v_time_test,
                     'avg_nodes': tot_nodes/graphs_in_test, 
                     'avg_edges': tot_edges/graphs_in_test,
                     'name': dataset_name,

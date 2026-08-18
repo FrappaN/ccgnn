@@ -25,6 +25,8 @@ class DataToFloat(BaseTransform):
     def __call__(self, data):
         data.x = data.x.to(torch.float32)
         return data
+    def forward(self, data):
+        return self.__call__(data)
     
 
 class EXPWL1Dataset(InMemoryDataset):

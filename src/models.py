@@ -25,10 +25,13 @@ def laplacian_p(edge_index, num_nodes, pos_enc_dim):
 
 
 class GNNModel(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels=None, bias=False, num_layers=1, conv_type='GCN'):
+    def __init__(self, in_channels, hidden_channels, out_channels=None, bias=False, num_layers=1, conv_type='GCN', trainable_emb=False, input_linearity=False):
         super(GNNModel, self).__init__()
 
         self.convs = torch.nn.ModuleList()
+        self.input_linearity = input_linearity
+        if input_linearity:
+            self.input_linear = torch.nn.Linear(in_channels, hidden_channels)
 
         for _ in range(num_layers - 1):
             if conv_type == 'GCN':
@@ -43,7 +46,7 @@ class GNNModel(torch.nn.Module):
 
         if out_channels is None:
             out_channels = hidden_channels
-        if num_layers == 1:
+        if num_layers == 1 and not input_linearity:
             hidden_channels = in_channels
         if conv_type == 'GCN':
             self.conv = tg.nn.GCNConv(hidden_channels, out_channels, bias=bias)
@@ -61,10 +64,13 @@ class GNNModel(torch.nn.Module):
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
+        if self.input_linearity:
+            x = self.input_linear(x)
         for conv in self.convs[:-1]:
             x = conv(x, edge_index).relu()
         x = self.convs[-1](x, edge_index)
         return x 
+
 
 
 class LinearModel(torch.nn.Module):

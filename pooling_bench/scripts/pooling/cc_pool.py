@@ -21,10 +21,36 @@ from tgp.src import PoolingOutput, SRCPooling
 from tgp.utils.typing import ConnectionType, LiftType, ReduceType, SinvType
 from tgp.utils import connectivity_to_edge_index, connectivity_to_sparse_tensor
 
+# ---------------------------------------------------------------------------
+# Two settings, deliberately fixed here rather than exposed as CLI flags.
+#
+# AUX_LOSS_WEIGHT
+#   compute_loss divides by m^2, but ||W - M||^2 - ||M||^2 is itself O(m^2), so
+#   the auxiliary loss lands at O(1) -- the same order as the classification
+#   nll_loss.  At weight 1.0 the correlation-clustering objective is a second
+#   task of equal weight rather than an auxiliary regulariser.
+#
+# DETACH_SELECTOR
+#   the selector reads `x` straight out of the trained GIN trunk, so without
+#   this the auxiliary gradient flows back through the selector into the trunk:
+#   the CC objective would not merely train the selector, it would reshape the
+#   shared graph representation and compete with classification.
+# ---------------------------------------------------------------------------
+AUX_LOSS_WEIGHT = 1.0
+DETACH_SELECTOR = True
+
+
 
 
 class CCSelector(Select):
-    def __init__(self, in_channels: int, hidden_channels: int, ratio: float, s_inv_op: SinvType = "transpose", linear: bool = False) -> None:
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: int,
+        ratio: float,
+        s_inv_op: SinvType = "transpose",
+        linear: bool = False,
+    ) -> None:
         super().__init__()
 
         self.pool_ratio = float(ratio)
@@ -35,7 +61,6 @@ class CCSelector(Select):
             self.model = tg.Linear(in_channels, hidden_channels, bias=False)
         else:
             self.model = tg.GCNConv(in_channels, hidden_channels, bias=False)
-
 
     def forward(
         self,
@@ -54,11 +79,23 @@ class CCSelector(Select):
             edge_index = adj
 
         num_nodes = x.size(0)
+
+        # `x` here is the output of the trained GIN trunk, so the auxiliary CC
+        # loss back-propagates through the selector INTO the shared trunk: it
+        # does not merely train the selector, it pulls the graph representation
+        # itself towards a correlation-clustering optimum, competing with the
+        # classification loss.  DETACH_SELECTOR confines the CC objective to
+        # the selector and leaves the trunk to the downstream task.
+        x_sel = x.detach() if DETACH_SELECTOR else x
+
         # Embeddings
         if self.linear:
-            h = self.model(x, edge_weight=edge_weight)
+            # FIX: tg.Linear.forward accepts only x; passing edge_weight raised
+            # TypeError, so the --linear_cc path could never actually run.
+            h = self.model(x_sel)
         else:
-            h = self.model(x, edge_index, edge_weight=edge_weight)
+            h = self.model(x_sel, edge_index, edge_weight=edge_weight)
+
         h = torch.nn.functional.normalize(h, p=2, dim=1)
 
         # Clustering and reduction
@@ -75,31 +112,33 @@ class CCSelector(Select):
 
     def _make_cc_clusters(self, out, edge_index, batch) -> Tensor:
         """
-        Optimized connected-component style clustering using precomputed distances and GPU acceleration.
-        - Precomputes all pairwise distances once on the GPU.
-        - Assumes a complete graph for traversal.
+        Keep the (1 - pool_ratio) fraction of edges with the smallest embedding
+        distance and return the connected components of what remains.
+
         """
         num_nodes = out.size(0)
         undirected_edge_index = edge_index[:, edge_index[0] < edge_index[1]]
         device = out.device
 
-        # Precompute pairwise distances on GPU
-        out_half = out
-        row_out = out_half[undirected_edge_index[0]]
-        col_out = out_half[undirected_edge_index[1]]
+        if undirected_edge_index.size(1) == 0:
+            return torch.arange(num_nodes, dtype=torch.long, device=device)
+
+        row_out = out[undirected_edge_index[0]]
+        col_out = out[undirected_edge_index[1]]
         dists_sq = torch.sum((row_out - col_out) ** 2, dim=1)
 
-        k = max(int((1-self.pool_ratio) * dists_sq.size(0)), 1)
+        k = max(int((1 - self.pool_ratio) * dists_sq.size(0)), 1)
         topk_vals, topk_indices = torch.topk(dists_sq, k, largest=False)
         filtered_edges = undirected_edge_index[:, topk_indices]
 
-        filtered_edges = torch.cat([filtered_edges, filtered_edges[[1,0],:]], dim=1)  # make directed
-        
-        sp_graph = tg_utils.to_scipy_sparse_matrix(filtered_edges, num_nodes=num_nodes)
+        filtered_edges = torch.cat(
+            [filtered_edges, filtered_edges[[1, 0], :]], dim=1
+        )  # make directed
+
+        sp_graph = tg_utils.to_scipy_sparse_matrix(filtered_edges.cpu(), num_nodes=num_nodes)
         _, labels = sp.csgraph.connected_components(sp_graph, directed=False, return_labels=True)
         clustering = torch.from_numpy(labels).long().to(device)
 
-    
         return clustering
 
     def reset_parameters(self):
@@ -109,11 +148,12 @@ class CCSelector(Select):
         self.model.to(device)
         return self
 
+
 class CCPooler(SRCPooling):
     """
-    Learns a single GCN layer using the loss from `train_lpmodel` in `src/train.py`,
-    then forms clusters by applying `make_cc_clusters` (also from `src/train.py`) on
-    the learned node embeddings using a provided distance threshold.
+    Learns a single GCN layer with the LinkGNN loss from `src/train.py`, then
+    forms clusters by keeping the closest (1 - ratio) fraction of edges and
+    taking connected components.
 
     The pooling reduces the input graph to cluster-level nodes by aggregating
     features per cluster (default: sum) and collapsing edges between clusters
@@ -122,23 +162,10 @@ class CCPooler(SRCPooling):
     Args:
         in_channels (int): Input feature dimension per node.
         hidden_channels (int): Dimension of the learned embedding (GCN output).
-        threshold (float): Distance threshold for `make_cc_clusters`.
-        device (str or torch.device): Training/evaluation device. Defaults to CUDA if available.
-        epochs (int): Max training epochs for the single-layer GCN.
-        lr (float): Learning rate for Adam.
-        weight_decay (float): Weight decay for Adam.
-        patience (int): Early stopping patience (uses moving average like `train_lpmodel`).
-        random_pivots (Optional[int]): Pivot subsampling used by `train_lpmodel` to scale training.
+        ratio (float): Fraction of edges to drop when forming clusters.
         aggr_x (str): Feature aggregation over clusters (e.g., 'sum', 'mean', 'max').
         aggr_edge (str): Edge aggregation between clusters for SparseTensor coalesce.
         remove_self_loops (bool): Remove self-loops in the reduced graph.
-
-    Notes:
-        - This module trains on the provided graph the first time `forward` is called
-          (or when `fit` is invoked explicitly). Subsequent calls reuse the trained
-          model for the same graph.
-        - It expects a single graph (no batched multi-graph input). If `batch` is
-          provided, it will be collapsed to a single graph with a single batch label.
     """
 
     def __init__(
@@ -183,67 +210,75 @@ class CCPooler(SRCPooling):
         self.linear = linear
         self.num_pivots = num_pivots
         # Precompute W matrix for aux loss computation if precaching is enabled
-        if not self.precaching: 
+        if not self.precaching:
             self.W = None
         else:
             if max_nodes is None:
                 raise ValueError("max_nodes must be provided if precaching is enabled.")
-            self.W = torch.ones((max_nodes, max_nodes))*(-1.0)
+            self.W = torch.ones((max_nodes, max_nodes)) * (-1.0)
             self.W.fill_diagonal_(0.0)
 
+    def _fresh_W(self, m: int, device) -> Tensor:
+        """
+        Return a clean m x m signed weight matrix: -1 off-diagonal, 0 on the diagonal.
+
+        FIX: the previous code did `W = self.W[:m, :m]`, which is a *view* onto the
+        cached buffer, and then wrote +1 into it at every edge position. Those +1
+        entries were never cleared, so after a handful of graphs the cache held the
+        accumulated union of every edge set seen so far and the auxiliary loss was
+        being computed against a progressively more corrupted target -- silently,
+        and getting worse the longer the run went on.
+        """
+        if self.W is None:
+            W = torch.ones((m, m), device=device) * (-1.0)
+        else:
+            W = self.W[:m, :m]
+            W.fill_(-1.0)
+        W.fill_diagonal_(0.0)
+        return W
 
     def compute_loss(self, out: Tensor, adj: Adj, edge_weight: OptTensor = None) -> Tensor:
-        """Compute the train_lpmodel-style loss on current embeddings.
-        Loss per graph: ||W - (1 - cdist/2)||_F^2 - ||(1 - cdist/2)||_F^2
-        where W has +1 on edges, -1 elsewhere, and 0 on diagonal.
-        """
+        """Compute the LinkGNN-style loss on the current embeddings.
 
+        Loss per graph: ||W - M||_F^2 - ||M||_F^2 with M = 1 - d, where W has +1
+        on edges, -1 elsewhere, and 0 on the diagonal. This equals 4*cc_lp(d) up
+        to an additive constant, i.e. it is exactly the CGW metric-LP objective.
+        """
         edge_index, edge_weight = connectivity_to_edge_index(adj, edge_weight)
-        
+
         if self.num_pivots is None:
             m = out.size(0)
-            if self.W is None:
-                W = torch.ones((m, m), device=out.device) * (-1.0)
-                W.fill_diagonal_(0.0)
-                # assuming graph is undirected
-                if edge_weight is None:
-                    W[edge_index[0], edge_index[1]] = 1.0 
-                else:
-                    W[edge_index[0], edge_index[1]] = edge_weight
+            sub_out = out
+            W = self._fresh_W(m, out.device)
+            # assuming graph is undirected
+            if edge_weight is None:
+                W[edge_index[0], edge_index[1]] = 1.0
             else:
-                W = self.W[:m, :m]
-                # assuming graph is undirected
-                if edge_weight is None:
-                    W[edge_index[0], edge_index[1]] = 1.0 
-                else:
-                    W[edge_index[0], edge_index[1]] = edge_weight
-            dists = torch.cdist(out, out) / 2
+                W[edge_index[0], edge_index[1]] = edge_weight
         else:
             # pivot-based loss computation
             num_nodes = out.size(0)
             num_pivots = min(self.num_pivots, num_nodes)
-            
-            pivots = torch.randperm(out.size(0))[:num_pivots]
-            nodes, pivot_edge_index, _, _ = tg_utils.k_hop_subgraph(pivots, 1, edge_index, relabel_nodes=True, num_nodes=out.size(0))
+
+            pivots = torch.randperm(num_nodes, device=out.device)[:num_pivots]
+            nodes, pivot_edge_index, _, _ = tg_utils.k_hop_subgraph(
+                pivots, 1, edge_index, relabel_nodes=True, num_nodes=num_nodes
+            )
             sub_out = out[nodes]
             m = sub_out.size(0)
-            #print('sub_nodes', m)
-            if self.W is None:
-                W = torch.ones((m, m), device=out.device) * (-1.0)
-                W.fill_diagonal_(0.0)
-                W[pivot_edge_index[0], pivot_edge_index[1]] = 1.0 # assuming graph is undirected
-            else:
-                W = self.W[:m, :m]
-                W[pivot_edge_index[0], pivot_edge_index[1]] = 1.0 # assuming graph is undirected
-            dists = torch.cdist(sub_out, sub_out) / 2
+            W = self._fresh_W(m, out.device)
+            W[pivot_edge_index[0], pivot_edge_index[1]] = 1.0  # assuming undirected
 
+        dists = torch.cdist(sub_out, sub_out) / 2
         C = 1 - dists
         diff = torch.norm(W - C, p='fro')**2
         norm_C = torch.norm(C, p='fro')**2
         aux = diff - norm_C
-        aux /= (m * m)  # normalize by num elements
+        aux = aux / (m * m)  # normalize by num elements
 
-        return aux
+        # Returned as a dict so tgp's get_loss_value() picks it up (a bare
+        # tensor made it return None, which is what silently zeroed this loss).
+        return {"cc_loss": AUX_LOSS_WEIGHT * aux}
 
     def forward(
         self,
@@ -276,7 +311,6 @@ class CCPooler(SRCPooling):
         # Reduce
         x_pooled, batch_pooled = self.reduce(x=x, so=so, batch=batch)
 
-
         # Connect
         edge_index_pooled, edge_weight_pooled = self.connect(
             edge_index=adj,
@@ -284,7 +318,6 @@ class CCPooler(SRCPooling):
             edge_weight=edge_weight,
             batch_pooled=batch_pooled,
         )
-        
 
         out = PoolingOutput(
             x=x_pooled,
@@ -296,7 +329,6 @@ class CCPooler(SRCPooling):
         )
         return out
 
-
     @property
     def is_dense(self) -> bool:
         # CCPooler operates in sparse mode
@@ -306,13 +338,13 @@ class CCPooler(SRCPooling):
     def data_transforms():
         # No extra transforms required
         return None
-    
+
     def reset_parameters(self):
         self.selector.reset_parameters()
         self.reducer.reset_parameters()
         self.connector.reset_parameters()
         self.lifter.reset_parameters()
-    
+
     def to(self, device):
         self.selector.to(device)
         self.reducer.to(device)
